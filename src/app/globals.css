@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0B0B0C;
+  --foreground: #F4F4F6;
+
+  --primary: #F6CF38;
+  --primary-foreground: #0B0B0C;
+
+  --card: #161617;
+  --card-foreground: #F4F4F6;
+
+  --popover: #161617;
+  --popover-foreground: #F4F4F6;
+
+  --border: #2D2D30;
+  --input: #2D2D30;
+
+  --muted: #242427;
+  --muted-foreground: #A1A1AA;
+
+  --accent: #242427;
+  --accent-foreground: #F6CF38;
+
+  --destructive: #EF4444;
+  --destructive-foreground: #F4F4F6;
+
+  --radius: 0.5rem;
+}
+
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+  
+  --font-sans: var(--font-inter), sans-serif;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-inter), sans-serif;
+  overflow-x: hidden;
+}
+
+/* Custom Scrollbar for premium dark-mode feeling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0B0B0C;
+}
+::-webkit-scrollbar-thumb {
+  background: #2D2D30;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #F6CF38;
+}
