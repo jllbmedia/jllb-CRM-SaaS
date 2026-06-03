@@ -13,7 +13,9 @@ import {
   ChevronRight,
   ShieldCheck,
   UserCog,
-  LogOut
+  LogOut,
+  User,
+  History
 } from "lucide-react";
 
 export default function Sidebar() {
@@ -69,10 +71,12 @@ export default function Sidebar() {
     { name: "Clients", href: "/clients", icon: Users },
     { name: "Projects", href: "/projects", icon: Briefcase },
     { name: "Tasks", href: "/tasks", icon: ListTodo },
+    { name: "My Profile", href: "/profile", icon: User },
   ];
 
   if (isAdmin) {
     navItems.push({ name: "Team Settings", href: "/admin/users", icon: UserCog });
+    navItems.push({ name: "Admin Logs", href: "/admin/logs", icon: History });
   }
 
   return (

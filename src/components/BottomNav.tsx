@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createClient } from "@/utils/supabase/client";
-import { LayoutDashboard, Users, Briefcase, ListTodo, UserCog } from "lucide-react";
+import { LayoutDashboard, Users, Briefcase, ListTodo, UserCog, History } from "lucide-react";
 
 export default function BottomNav() {
   const pathname = usePathname();
@@ -42,6 +42,7 @@ export default function BottomNav() {
 
   if (isAdmin) {
     navItems.push({ name: "Team", href: "/admin/users", icon: UserCog });
+    navItems.push({ name: "Logs", href: "/admin/logs", icon: History });
   }
 
   return (

@@ -13,7 +13,7 @@ interface Member {
   created_at: string;
 }
 
-export default function AdminControlCenter({ initialMembers }: { initialMembers: Member[] }) {
+export default function AdminControlCenter({ initialMembers, currentUserId }: { initialMembers: Member[], currentUserId?: string }) {
   const [activeTab, setActiveTab] = useState<"directory" | "audit">("directory");
 
   return (
@@ -49,7 +49,7 @@ export default function AdminControlCenter({ initialMembers }: { initialMembers:
       {/* Dynamic Component Mounting */}
       <div className="animate-in fade-in duration-200">
         {activeTab === "directory" ? (
-          <TeammateList initialMembers={initialMembers} />
+          <TeammateList initialMembers={initialMembers} currentUserId={currentUserId} />
         ) : (
           <ActivityFeed />
         )}

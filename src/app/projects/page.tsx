@@ -13,8 +13,12 @@ import {
   AlertTriangle,
   X,
   Edit2,
-  DollarSign
+  DollarSign,
+  Trash2
 } from "lucide-react";
+import { BudgetEditableCell } from "@/components/BudgetEditableCell";
+import { ProjectTasksPanel } from "@/components/ProjectTasksPanel";
+import { logInteraction } from "@/utils/logger";
 
 interface Client {
   id: string;
@@ -28,10 +32,17 @@ interface Project {
   status: string;
   budget: number;
   created_at: string;
+  created_by?: string;
   client: {
     name: string;
     company: string | null;
   } | null;
+  estimated_hours?: number | null;
+  actual_hours?: number | null;
+  estimated_cost?: number | null;
+  actual_cost?: number | null;
+  start_date?: string | null;
+  end_date?: string | null;
 }
 
 export default function ProjectsPage() {
@@ -44,6 +55,7 @@ export default function ProjectsPage() {
   const [totalPages, setTotalPages] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
   const [searchTerm, setSearchTerm] = useState("");
+  const [selectedStatuses, setSelectedStatuses] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // Transaction banner
@@ -60,11 +72,27 @@ export default function ProjectsPage() {
   const [newClientId, setNewClientId] = useState("");
   const [newStatus, setNewStatus] = useState("Planning");
   const [newBudget, setNewBudget] = useState("");
+  const [newEstimatedHours, setNewEstimatedHours] = useState("");
+  const [newStartDate, setNewStartDate] = useState("");
+  const [newEndDate, setNewEndDate] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
   // Grid Sorting
   const [sortField, setSortField] = useState<"name" | "budget">("name");
   const [sortAsc, setSortAsc] = useState(true);
+
+  // Deletion States
+  const [currentUser, setCurrentUser] = useState<{ id: string; role: string } | null>(null);
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+  const [deleteTargetName, setDeleteTargetName] = useState<string | null>(null);
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [isCounting, setIsCounting] = useState(false);
+  const [linkedTasksCount, setLinkedTasksCount] = useState(0);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  // Sliding tasks panel states
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [isTasksPanelOpen, setIsTasksPanelOpen] = useState(false);
 
   const fetchProjects = async () => {
     setIsLoading(true);
@@ -73,7 +101,34 @@ export default function ProjectsPage() {
       const res = await fetch(`/api/projects?page=${page}&limit=25`);
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || "Failed to load projects.");
-      setProjects(result.data);
+
+      // Fetch all tasks associated with these projects concurrently
+      let tasksData: any[] = [];
+      if (result.data && result.data.length > 0) {
+        const projectIds = result.data.map((p: any) => p.id);
+        const { data, error } = await supabase
+          .from("tasks")
+          .select("project_id, hours_spent, cost_per_hour")
+          .in("project_id", projectIds);
+        if (!error && data) {
+          tasksData = data;
+        }
+      }
+
+      // Roll up tasks dynamically to override any stale database actuals in state
+      const computedProjects = (result.data || []).map((project: any) => {
+        const projectTasks = tasksData.filter(t => t.project_id === project.id);
+        const actualHours = projectTasks.reduce((sum, t) => sum + (Number(t.hours_spent) || 0), 0);
+        const actualCost = projectTasks.reduce((sum, t) => sum + ((Number(t.hours_spent) || 0) * (Number(t.cost_per_hour) || 0)), 0);
+
+        return {
+          ...project,
+          actual_hours: actualHours,
+          actual_cost: actualCost
+        };
+      });
+
+      setProjects(computedProjects);
       setTotalPages(result.totalPages);
       setTotalCount(result.totalCount);
     } catch (err: any) {
@@ -93,10 +148,67 @@ export default function ProjectsPage() {
     }
   };
 
+  const fetchLinkedTasksCount = async (projectId: string) => {
+    try {
+      const { count, error } = await supabase
+        .from("tasks")
+        .select("*", { count: "exact", head: true })
+        .eq("project_id", projectId);
+      
+      if (error) throw error;
+      return count || 0;
+    } catch (err) {
+      console.error("Error counting tasks:", err);
+      return 0;
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTargetId) return;
+    setIsDeleting(true);
+    try {
+      const res = await fetch("/api/projects", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: deleteTargetId }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || "Failed to delete project.");
+
+      setProjects(prev => prev.filter(p => p.id !== deleteTargetId));
+      setIsDeleteOpen(false);
+      setDeleteTargetId(null);
+      setDeleteTargetName(null);
+    } catch (err: any) {
+      setErrorMsg(err.message);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   useEffect(() => {
     fetchProjects();
     fetchClients();
   }, [page]);
+
+  useEffect(() => {
+    async function loadCurrentUser() {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("id, role")
+            .eq("id", user.id)
+            .single();
+          if (profile) setCurrentUser(profile);
+        }
+      } catch (e) {
+        console.error("Could not load current user profile:", e);
+      }
+    }
+    loadCurrentUser();
+  }, []);
 
   // Compute total budget pipeline of all active loaded projects
   const totalBudgetPipeline = projects.reduce((sum, proj) => sum + (Number(proj.budget) || 0), 0);
@@ -118,7 +230,10 @@ export default function ProjectsPage() {
           name: newName,
           client_id: newClientId,
           status: newStatus,
-          budget: parseFloat(newBudget) || 0
+          budget: parseFloat(newBudget) || 0,
+          estimated_hours: parseFloat(newEstimatedHours) || 0,
+          start_date: newStartDate || null,
+          end_date: newEndDate || null
         }),
       });
       const result = await res.json();
@@ -131,6 +246,12 @@ export default function ProjectsPage() {
       setNewClientId("");
       setNewStatus("Planning");
       setNewBudget("");
+      setNewEstimatedHours("");
+      setNewStartDate("");
+      setNewEndDate("");
+
+      // Log interaction upon project creation completion
+      await logInteraction(supabase, "INSERT", `Created project: "${newName}"`);
     } catch (err: any) {
       setErrorMsg(err.message);
     } finally {
@@ -139,7 +260,7 @@ export default function ProjectsPage() {
   };
 
   // Optimistic cell updates with automatic cached rollback safety
-  const handleCellUpdate = async (rowId: string, field: "name" | "budget" | "status" | "client_id", originalValue: string | number | null) => {
+  const handleCellUpdate = async (rowId: string, field: "name" | "budget" | "status" | "client_id" | "start_date" | "end_date", originalValue: string | number | null) => {
     if (editValue.toString().trim() === (originalValue || "").toString()) {
       setEditRowId(null);
       setEditField(null);
@@ -150,7 +271,10 @@ export default function ProjectsPage() {
     const previousState = [...projects];
 
     // 2. Perform optimistic update instantly
-    const parsedValue = field === "budget" ? (parseFloat(editValue) || 0) : editValue;
+    const parsedValue = field === "budget" 
+      ? (parseFloat(editValue) || 0) 
+      : (["start_date", "end_date"].includes(field) && !editValue ? null : editValue);
+
     setProjects(prev => prev.map(p => {
       if (p.id === rowId) {
         let updated = { ...p, [field]: parsedValue };
@@ -182,6 +306,8 @@ export default function ProjectsPage() {
           client_id: updatedProj.client_id,
           status: updatedProj.status,
           budget: updatedProj.budget,
+          start_date: updatedProj.start_date,
+          end_date: updatedProj.end_date,
         }),
       });
 
@@ -203,11 +329,16 @@ export default function ProjectsPage() {
     }
   };
 
-  const filteredProjects = projects.filter(p => 
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    p.status.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (p.client?.name.toLowerCase() || "").includes(searchTerm.toLowerCase())
-  );
+  const filteredProjects = projects.filter(p => {
+    const searchMatch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      p.status.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (p.client?.name.toLowerCase() || "").includes(searchTerm.toLowerCase());
+
+    if (selectedStatuses.length > 0) {
+      return searchMatch && selectedStatuses.some(s => s.toLowerCase() === p.status.toLowerCase());
+    }
+    return searchMatch;
+  });
 
   const sortedProjects = [...filteredProjects].sort((a, b) => {
     if (sortField === "budget") {
@@ -268,18 +399,45 @@ export default function ProjectsPage() {
       )}
 
       {/* Controls Bar */}
-      <div className="flex flex-col sm:flex-row gap-4 items-center justify-between">
-        <div className="relative w-full sm:max-w-md">
-          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-zinc-500">
-            <Search size={18} />
+      <div className="flex flex-col lg:flex-row gap-4 items-start lg:items-center justify-between">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 w-full lg:max-w-3xl">
+          <div className="relative w-full sm:max-w-xs">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-zinc-500">
+              <Search size={18} />
+            </div>
+            <input
+              type="text"
+              placeholder="Search projects..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="block w-full pl-10 pr-4 py-2 bg-[#161617] border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-xs focus:outline-none focus:border-[#F6CF38] transition-colors"
+            />
           </div>
-          <input
-            type="text"
-            placeholder="Search projects by name, client, status..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="block w-full pl-10 pr-4 py-2.5 bg-[#161617] border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors"
-          />
+
+          {/* Status Checkbox Filter Row */}
+          <div className="flex flex-wrap items-center gap-3 bg-[#161617] border border-[#2D2D30] px-3.5 py-2 rounded-xl text-xs">
+            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Filter Status:</span>
+            {["Planning", "Active", "On Hold", "Completed"].map((status) => {
+              const checked = selectedStatuses.includes(status);
+              return (
+                <label key={status} className="flex items-center gap-2 cursor-pointer select-none text-zinc-400 hover:text-white transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => {
+                      if (checked) {
+                        setSelectedStatuses(selectedStatuses.filter(s => s !== status));
+                      } else {
+                        setSelectedStatuses([...selectedStatuses, status]);
+                      }
+                    }}
+                    className="accent-[#F6CF38] rounded border-[#2D2D30] bg-zinc-950 focus:ring-0 cursor-pointer h-3.5 w-3.5"
+                  />
+                  <span className="font-semibold text-[11px]">{status}</span>
+                </label>
+              );
+            })}
+          </div>
         </div>
 
         {/* Server-Side Pagination */}
@@ -331,6 +489,9 @@ export default function ProjectsPage() {
           <table className="min-w-full divide-y divide-[#2D2D30] text-left border-collapse">
             <thead className="bg-zinc-900/60 font-semibold text-xs text-zinc-400 uppercase tracking-wider">
               <tr>
+                <th className="px-4 py-3 border-r border-[#2D2D30]">Start Date</th>
+                <th className="px-4 py-3 border-r border-[#2D2D30]">End Date</th>
+                <th className="px-4 py-3 border-r border-[#2D2D30]">Associated Client</th>
                 <th 
                   onClick={() => handleSort("name")}
                   className="px-4 py-3 border-r border-[#2D2D30] cursor-pointer hover:bg-zinc-800/40 select-none transition-colors"
@@ -340,7 +501,6 @@ export default function ProjectsPage() {
                     {sortField === "name" && (sortAsc ? "▲" : "▼")}
                   </div>
                 </th>
-                <th className="px-4 py-3 border-r border-[#2D2D30]">Associated Client</th>
                 <th className="px-4 py-3 border-r border-[#2D2D30]">Status</th>
                 <th 
                   onClick={() => handleSort("budget")}
@@ -351,6 +511,9 @@ export default function ProjectsPage() {
                     {sortField === "budget" && (sortAsc ? "▲" : "▼")}
                   </div>
                 </th>
+                <th className="px-4 py-3 border-r border-[#2D2D30]">Est. Hours</th>
+                <th className="px-4 py-3 border-r border-[#2D2D30]">Act. Hours</th>
+                <th className="px-4 py-3 border-r border-[#2D2D30]">Actual Cost ($)</th>
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
@@ -358,36 +521,87 @@ export default function ProjectsPage() {
               {sortedProjects.map((project) => (
                 <tr key={project.id} className="hover:bg-zinc-900/30 group">
                   
-                  {/* Name Cell */}
+                  {/* Start Date Cell */}
                   <td 
                     onDoubleClick={() => {
                       setEditRowId(project.id);
-                      setEditField("name");
-                      setEditValue(project.name);
+                      setEditField("start_date");
+                      setEditValue(project.start_date || "");
                     }}
-                    className="px-4 py-3 border-r border-[#2D2D30] relative min-w-[200px]"
+                    className="px-4 py-3 border-r border-[#2D2D30] relative min-w-[150px]"
                   >
-                    {editRowId === project.id && editField === "name" ? (
+                    {editRowId === project.id && editField === "start_date" ? (
                       <input
-                        type="text"
+                        type="date"
                         autoFocus
                         value={editValue}
                         onChange={(e) => setEditValue(e.target.value)}
-                        onBlur={() => handleCellUpdate(project.id, "name", project.name)}
+                        onBlur={() => handleCellUpdate(project.id, "start_date", project.start_date ?? null)}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") handleCellUpdate(project.id, "name", project.name);
+                          if (e.key === "Enter") handleCellUpdate(project.id, "start_date", project.start_date ?? null);
                           if (e.key === "Escape") { setEditRowId(null); setEditField(null); }
                         }}
                         className="w-full bg-zinc-900 border border-[#F6CF38] rounded px-2 py-1 text-white text-sm focus:outline-none"
                       />
                     ) : (
                       <div className="flex justify-between items-center w-full">
-                        <span className="font-semibold text-white">{project.name}</span>
+                        <span className="font-semibold text-zinc-300">
+                          {project.start_date ? new Date(project.start_date + "T00:00:00").toLocaleDateString(undefined, {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric'
+                          }) : "—"}
+                        </span>
                         <button 
                           onClick={() => {
                             setEditRowId(project.id);
-                            setEditField("name");
-                            setEditValue(project.name);
+                            setEditField("start_date");
+                            setEditValue(project.start_date || "");
+                          }}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-zinc-500 hover:text-[#F6CF38] transition-all duration-150 cursor-pointer"
+                        >
+                          <Edit2 size={12} />
+                        </button>
+                      </div>
+                    )}
+                  </td>
+
+                  {/* End Date Cell */}
+                  <td 
+                    onDoubleClick={() => {
+                      setEditRowId(project.id);
+                      setEditField("end_date");
+                      setEditValue(project.end_date || "");
+                    }}
+                    className="px-4 py-3 border-r border-[#2D2D30] relative min-w-[150px]"
+                  >
+                    {editRowId === project.id && editField === "end_date" ? (
+                      <input
+                        type="date"
+                        autoFocus
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onBlur={() => handleCellUpdate(project.id, "end_date", project.end_date ?? null)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleCellUpdate(project.id, "end_date", project.end_date ?? null);
+                          if (e.key === "Escape") { setEditRowId(null); setEditField(null); }
+                        }}
+                        className="w-full bg-zinc-900 border border-[#F6CF38] rounded px-2 py-1 text-white text-sm focus:outline-none"
+                      />
+                    ) : (
+                      <div className="flex justify-between items-center w-full">
+                        <span className="font-semibold text-zinc-300">
+                          {project.end_date ? new Date(project.end_date + "T00:00:00").toLocaleDateString(undefined, {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric'
+                          }) : "—"}
+                        </span>
+                        <button 
+                          onClick={() => {
+                            setEditRowId(project.id);
+                            setEditField("end_date");
+                            setEditValue(project.end_date || "");
                           }}
                           className="opacity-0 group-hover:opacity-100 p-1 text-zinc-500 hover:text-[#F6CF38] transition-all duration-150 cursor-pointer"
                         >
@@ -427,6 +641,53 @@ export default function ProjectsPage() {
                             setEditRowId(project.id);
                             setEditField("client_id");
                             setEditValue(project.client_id);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-zinc-500 hover:text-[#F6CF38] transition-all duration-150 cursor-pointer"
+                        >
+                          <Edit2 size={12} />
+                        </button>
+                      </div>
+                    )}
+                  </td>
+
+                  {/* Name Cell */}
+                  <td 
+                    onDoubleClick={() => {
+                      setEditRowId(project.id);
+                      setEditField("name");
+                      setEditValue(project.name);
+                    }}
+                    className="px-4 py-3 border-r border-[#2D2D30] relative min-w-[200px]"
+                  >
+                    {editRowId === project.id && editField === "name" ? (
+                      <input
+                        type="text"
+                        autoFocus
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onBlur={() => handleCellUpdate(project.id, "name", project.name)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleCellUpdate(project.id, "name", project.name);
+                          if (e.key === "Escape") { setEditRowId(null); setEditField(null); }
+                        }}
+                        className="w-full bg-zinc-900 border border-[#F6CF38] rounded px-2 py-1 text-white text-sm focus:outline-none"
+                      />
+                    ) : (
+                      <div className="flex justify-between items-center w-full">
+                        <span 
+                          onClick={() => {
+                            setSelectedProjectId(project.id);
+                            setIsTasksPanelOpen(true);
+                          }}
+                          className="font-semibold text-white hover:text-[#F6CF38] hover:underline cursor-pointer transition-colors"
+                        >
+                          {project.name}
+                        </span>
+                        <button 
+                          onClick={() => {
+                            setEditRowId(project.id);
+                            setEditField("name");
+                            setEditValue(project.name);
                           }}
                           className="opacity-0 group-hover:opacity-100 p-1 text-zinc-500 hover:text-[#F6CF38] transition-all duration-150 cursor-pointer"
                         >
@@ -486,18 +747,20 @@ export default function ProjectsPage() {
                       >
                         <option value="Planning">Planning</option>
                         <option value="Active">Active</option>
-                        <option value="Completed">Completed</option>
+                        <option value="In Review">Under Review</option>
                         <option value="On Hold">On Hold</option>
+                        <option value="Completed">Completed</option>
                       </select>
                     ) : (
                       <div className="flex justify-between items-center w-full">
                         <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold ${
                           project.status === "Completed" ? "bg-green-500/10 text-green-400" :
                           project.status === "Active" ? "bg-[#F6CF38]/10 text-[#F6CF38]" :
+                          project.status === "In Review" ? "bg-purple-500/10 text-purple-400" :
                           project.status === "On Hold" ? "bg-red-500/10 text-red-400" :
                           "bg-zinc-800 text-zinc-400"
                         }`}>
-                          {project.status}
+                          {project.status === "In Review" ? "Under Review" : project.status}
                         </span>
                         <button 
                           onClick={() => {
@@ -554,9 +817,47 @@ export default function ProjectsPage() {
                     )}
                   </td>
 
+                  {/* Est. Hours Cell */}
+                  <td className="px-4 py-3 border-r border-[#2D2D30] relative min-w-[120px]">
+                    <BudgetEditableCell projectId={project.id} columnName="estimated_hours" initialValue={project.estimated_hours} type="number" />
+                  </td>
+
+                  {/* Act. Hours Cell */}
+                  <td className="px-4 py-3 border-r border-[#2D2D30] relative min-w-[120px]">
+                    <BudgetEditableCell projectId={project.id} columnName="actual_hours" initialValue={project.actual_hours} type="number" />
+                  </td>
+
+                  {/* Actual Cost ($) Cell */}
+                  <td className="px-4 py-3 border-r border-[#2D2D30] relative min-w-[150px]">
+                    <BudgetEditableCell projectId={project.id} columnName="actual_cost" initialValue={project.actual_cost} type="currency" />
+                  </td>
+
                   {/* Actions Column */}
-                  <td className="px-4 py-3 text-right text-xs">
-                    <span className="text-zinc-500 font-bold uppercase tracking-wider text-[10px] select-none">Double-click Cell to Edit</span>
+                  <td className="px-4 py-3 text-right">
+                    <div className="flex justify-end items-center gap-3">
+                      <span className="text-zinc-500 font-bold uppercase tracking-wider text-[10px] select-none hidden lg:inline">Double-click Cell to Edit</span>
+                      {(() => {
+                        const isDeleteAllowed = currentUser?.role === "Admin" || project.created_by === currentUser?.id;
+                        return (
+                          <button
+                            onClick={async () => {
+                              setDeleteTargetId(project.id);
+                              setDeleteTargetName(project.name);
+                              setIsDeleteOpen(true);
+                              setIsCounting(true);
+                              const count = await fetchLinkedTasksCount(project.id);
+                              setLinkedTasksCount(count);
+                              setIsCounting(false);
+                            }}
+                            disabled={!isDeleteAllowed}
+                            className="p-1.5 bg-zinc-900 border border-[#2D2D30] hover:border-red-500/50 hover:bg-red-500/5 hover:text-red-400 text-zinc-400 rounded-xl transition-all duration-200 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:border-[#2D2D30] disabled:hover:bg-zinc-900 disabled:hover:text-zinc-400"
+                            title={isDeleteAllowed ? "Delete Project" : "Only creators or admins can delete this project"}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        );
+                      })()}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -568,7 +869,7 @@ export default function ProjectsPage() {
       {/* Add Project Slideout / Modal */}
       {isAddOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-[#161617] border border-[#2D2D30] rounded-2xl w-full max-w-md p-6 relative shadow-2xl space-y-6 animate-in zoom-in-95 duration-200">
+          <div className="bg-[#161617] border border-[#2D2D30] rounded-2xl w-full max-w-lg p-6 relative shadow-2xl space-y-6 animate-in zoom-in-95 duration-200">
             <button onClick={() => setIsAddOpen(false)} className="absolute top-4 right-4 p-2 bg-zinc-900 border border-[#2D2D30] text-zinc-400 hover:text-white rounded-xl transition-colors cursor-pointer">
               <X size={16} />
             </button>
@@ -608,16 +909,38 @@ export default function ProjectsPage() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block">Start Date</label>
+                  <input
+                    type="date"
+                    value={newStartDate}
+                    onChange={(e) => setNewStartDate(e.target.value)}
+                    className="block w-full px-4 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors text-xs font-semibold"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block">End Date</label>
+                  <input
+                    type="date"
+                    value={newEndDate}
+                    onChange={(e) => setNewEndDate(e.target.value)}
+                    className="block w-full px-4 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors text-xs font-semibold"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-4">
+                <div className="space-y-1.5">
                   <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block">Initial Status</label>
                   <select
                     value={newStatus}
                     onChange={(e) => setNewStatus(e.target.value)}
-                    className="block w-full px-4 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white text-sm focus:outline-none focus:border-[#F6CF38] transition-colors cursor-pointer"
+                    className="block w-full px-3 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white text-sm focus:outline-none focus:border-[#F6CF38] transition-colors cursor-pointer"
                   >
                     <option value="Planning">Planning</option>
                     <option value="Active">Active</option>
-                    <option value="Completed">Completed</option>
+                    <option value="In Review">Under Review</option>
                     <option value="On Hold">On Hold</option>
+                    <option value="Completed">Completed</option>
                   </select>
                 </div>
                 <div className="space-y-1.5">
@@ -627,7 +950,17 @@ export default function ProjectsPage() {
                     value={newBudget}
                     onChange={(e) => setNewBudget(e.target.value)}
                     placeholder="e.g. 5000"
-                    className="block w-full px-4 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors"
+                    className="block w-full px-3 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors font-semibold"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block">Est. Hours</label>
+                  <input
+                    type="number"
+                    value={newEstimatedHours}
+                    onChange={(e) => setNewEstimatedHours(e.target.value)}
+                    placeholder="e.g. 40"
+                    className="block w-full px-3 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors font-semibold"
                   />
                 </div>
               </div>
@@ -643,6 +976,83 @@ export default function ProjectsPage() {
           </div>
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      {isDeleteOpen && deleteTargetId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#161617] border border-red-500/30 rounded-2xl w-full max-w-md p-6 relative shadow-2xl space-y-6 animate-in zoom-in-95 duration-200">
+            
+            <button
+              onClick={() => {
+                setIsDeleteOpen(false);
+                setDeleteTargetId(null);
+                setDeleteTargetName(null);
+              }}
+              className="absolute top-4 right-4 p-2 bg-zinc-900 border border-[#2D2D30] text-zinc-400 hover:text-white rounded-xl transition-colors cursor-pointer"
+            >
+              <X size={16} />
+            </button>
+
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-red-500/10 text-red-400 rounded-xl border border-red-500/20">
+                <AlertTriangle size={20} />
+              </div>
+              <h3 className="text-lg font-bold text-white tracking-wide">
+                Confirm Deletion
+              </h3>
+            </div>
+
+            {isCounting ? (
+              <div className="flex flex-col items-center justify-center gap-3 py-6 bg-red-500/5 border border-red-500/15 rounded-xl text-zinc-400">
+                <Loader2 className="animate-spin text-[#F6CF38]" size={20} />
+                <span className="text-[10px] font-bold uppercase tracking-wider">Calculating linked tasks...</span>
+              </div>
+            ) : (
+              <div className="space-y-3 bg-red-500/5 border border-red-500/15 rounded-xl p-4 text-xs leading-relaxed text-zinc-400">
+                <p className="text-red-400 font-bold uppercase tracking-wider text-[10px]">Critical Security Warning</p>
+                <p>
+                  You are about to permanently delete project <strong className="text-white">{deleteTargetName}</strong>. 
+                  This action is irreversible.
+                </p>
+                <p className="text-red-400 font-bold mt-2">
+                  Warning: Deleting this project will permanently delete {linkedTasksCount} associated tasks.
+                </p>
+              </div>
+            )}
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDeleteOpen(false);
+                  setDeleteTargetId(null);
+                  setDeleteTargetName(null);
+                }}
+                className="flex-1 px-4 py-3 bg-zinc-900 hover:bg-zinc-800 border border-[#2D2D30] text-white rounded-xl font-bold text-xs tracking-wider uppercase transition-all duration-200 cursor-pointer text-center"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                disabled={isDeleting || isCounting}
+                className="flex-1 px-4 py-3 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold text-xs tracking-wider uppercase transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer text-center"
+              >
+                {isDeleting ? <Loader2 size={16} className="animate-spin mx-auto" /> : <span>Delete Project</span>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sliding Tasks Panel */}
+      <ProjectTasksPanel
+        projectId={selectedProjectId}
+        isOpen={isTasksPanelOpen}
+        onClose={() => {
+          setIsTasksPanelOpen(false);
+          setSelectedProjectId(null);
+        }}
+      />
     </div>
   );
 }

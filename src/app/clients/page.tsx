@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { createClient } from "@/utils/supabase/client";
 import { 
   Users, 
   UserPlus, 
@@ -10,15 +11,22 @@ import {
   Loader2, 
   AlertTriangle,
   X,
-  Edit2
+  Edit2,
+  Trash2
 } from "lucide-react";
+import { ClientProjectsPanel } from "@/components/ClientProjectsPanel";
 
 interface Client {
   id: string;
   name: string;
   company: string | null;
   email: string | null;
+  phone?: string | null;
+  website_url?: string | null;
+  primary_contact_name?: string | null;
+  notes?: string | null;
   created_at: string;
+  created_by: string | null;
 }
 
 export default function ClientsPage() {
@@ -31,6 +39,9 @@ export default function ClientsPage() {
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Current user state
+  const [currentUser, setCurrentUser] = useState<{ id: string; role: string } | null>(null);
+
   // Cell edit state trackers
   const [editRowId, setEditRowId] = useState<string | null>(null);
   const [editField, setEditField] = useState<string | null>(null);
@@ -41,11 +52,111 @@ export default function ClientsPage() {
   const [newName, setNewName] = useState("");
   const [newCompany, setNewCompany] = useState("");
   const [newEmail, setNewEmail] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [newWebsiteUrl, setNewWebsiteUrl] = useState("");
+  const [newPrimaryContactName, setNewPrimaryContactName] = useState("");
+  const [newNotes, setNewNotes] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+
+  // Delete safety state trackers
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+  const [deleteTargetName, setDeleteTargetName] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isCounting, setIsCounting] = useState(false);
+  const [linkedProjectsCount, setLinkedProjectsCount] = useState<number>(0);
+  const [linkedTasksCount, setLinkedTasksCount] = useState<number>(0);
+
+  // Sliding panel state trackers
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
+  const [isPanelOpen, setIsPanelOpen] = useState(false);
+
+  const fetchLinkedCounts = async (clientId: string) => {
+    const supabase = createClient();
+    try {
+      // 1. Fetch exact projects count
+      const { count: projCount, error: projErr } = await supabase
+        .from("projects")
+        .select("*", { count: "exact", head: true })
+        .eq("client_id", clientId);
+
+      if (projErr) throw projErr;
+
+      // 2. Fetch associated project IDs to count tasks
+      const { data: clientProjects, error: cpErr } = await supabase
+        .from("projects")
+        .select("id")
+        .eq("client_id", clientId);
+
+      if (cpErr) throw cpErr;
+
+      let tasksCount = 0;
+      if (clientProjects && clientProjects.length > 0) {
+        const projectIds = clientProjects.map(p => p.id);
+        const { count: tCount, error: taskErr } = await supabase
+          .from("tasks")
+          .select("*", { count: "exact", head: true })
+          .in("project_id", projectIds);
+
+        if (taskErr) throw taskErr;
+        tasksCount = tCount || 0;
+      }
+
+      return { projectsCount: projCount || 0, tasksCount };
+    } catch (err) {
+      console.error("Error fetching linked counts:", err);
+      return { projectsCount: 0, tasksCount: 0 };
+    }
+  };
 
   // Local Grid Sorting state
   const [sortField, setSortField] = useState<"name" | "company">("name");
   const [sortAsc, setSortAsc] = useState(true);
+
+  useEffect(() => {
+    const supabase = createClient();
+    async function loadCurrentUser() {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("id, role")
+            .eq("id", user.id)
+            .single();
+          if (profile) setCurrentUser(profile);
+        }
+      } catch (err) {
+        console.error("Error loading current user:", err);
+      }
+    }
+    loadCurrentUser();
+  }, []);
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTargetId) return;
+    setIsDeleting(true);
+    setErrorMsg(null);
+    try {
+      const res = await fetch("/api/clients", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: deleteTargetId }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || "Failed to delete client.");
+
+      setClients(prev => prev.filter(c => c.id !== deleteTargetId));
+      setTotalCount(prev => Math.max(prev - 1, 0));
+      setIsDeleteOpen(false);
+      setDeleteTargetId(null);
+      setDeleteTargetName(null);
+    } catch (err: any) {
+      setErrorMsg(`Deletion failed: ${err.message}`);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   const fetchClients = async () => {
     setIsLoading(true);
@@ -77,7 +188,15 @@ export default function ClientsPage() {
       const res = await fetch("/api/clients", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newName, company: newCompany, email: newEmail }),
+        body: JSON.stringify({ 
+          name: newName, 
+          company: newCompany, 
+          email: newEmail,
+          phone: newPhone,
+          website_url: newWebsiteUrl,
+          primary_contact_name: newPrimaryContactName,
+          notes: newNotes
+        }),
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error || "Failed to create client.");
@@ -88,6 +207,10 @@ export default function ClientsPage() {
       setNewName("");
       setNewCompany("");
       setNewEmail("");
+      setNewPhone("");
+      setNewWebsiteUrl("");
+      setNewPrimaryContactName("");
+      setNewNotes("");
     } catch (err: any) {
       setErrorMsg(err.message);
     } finally {
@@ -96,7 +219,7 @@ export default function ClientsPage() {
   };
 
   // Optimistic UI updates with cache-state rollback logic
-  const handleCellUpdate = async (rowId: string, field: "name" | "company" | "email", originalValue: string | null) => {
+  const handleCellUpdate = async (rowId: string, field: "name" | "company" | "email" | "phone" | "website_url", originalValue: string | null) => {
     if (editValue.trim() === (originalValue || "")) {
       setEditRowId(null);
       setEditField(null);
@@ -124,9 +247,7 @@ export default function ClientsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: rowId,
-          name: updatedClient.name,
-          company: updatedClient.company,
-          email: updatedClient.email,
+          [field]: editValue,
         }),
       });
 
@@ -278,6 +399,8 @@ export default function ClientsPage() {
                   </div>
                 </th>
                 <th className="px-4 py-3 border-r border-[#2D2D30]">Email Address</th>
+                <th className="px-4 py-3 border-r border-[#2D2D30]">Phone</th>
+                <th className="px-4 py-3 border-r border-[#2D2D30]">Website</th>
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
@@ -309,7 +432,15 @@ export default function ClientsPage() {
                       />
                     ) : (
                       <div className="flex justify-between items-center w-full">
-                        <span className="font-semibold text-white">{client.name}</span>
+                        <span 
+                          onClick={() => {
+                            setSelectedClientId(client.id);
+                            setIsPanelOpen(true);
+                          }}
+                          className="font-semibold text-white hover:text-[#F6CF38] hover:underline cursor-pointer transition-colors"
+                        >
+                          {client.name}
+                        </span>
                         <button 
                           onClick={() => {
                             setEditRowId(client.id);
@@ -323,7 +454,7 @@ export default function ClientsPage() {
                       </div>
                     )}
                   </td>
-
+ 
                   {/* Company Cell */}
                   <td 
                     onDoubleClick={() => {
@@ -362,7 +493,7 @@ export default function ClientsPage() {
                       </div>
                     )}
                   </td>
-
+ 
                   {/* Email Cell */}
                   <td 
                     onDoubleClick={() => {
@@ -402,9 +533,122 @@ export default function ClientsPage() {
                     )}
                   </td>
 
+                  {/* Phone Cell */}
+                  <td 
+                    onDoubleClick={() => {
+                      setEditRowId(client.id);
+                      setEditField("phone");
+                      setEditValue(client.phone || "");
+                    }}
+                    className="px-4 py-3 border-r border-[#2D2D30] relative min-w-[180px]"
+                  >
+                    {editRowId === client.id && editField === "phone" ? (
+                      <input
+                        type="text"
+                        autoFocus
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onBlur={() => handleCellUpdate(client.id, "phone", client.phone || "")}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleCellUpdate(client.id, "phone", client.phone || "");
+                          if (e.key === "Escape") { setEditRowId(null); setEditField(null); }
+                        }}
+                        className="w-full bg-zinc-900 border border-[#F6CF38] rounded px-2 py-1 text-white text-sm focus:outline-none"
+                      />
+                    ) : (
+                      <div className="flex justify-between items-center w-full">
+                        <span>{client.phone || "—"}</span>
+                        <button 
+                          onClick={() => {
+                            setEditRowId(client.id);
+                            setEditField("phone");
+                            setEditValue(client.phone || "");
+                          }}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-zinc-500 hover:text-[#F6CF38] transition-all duration-150 cursor-pointer"
+                        >
+                          <Edit2 size={12} />
+                        </button>
+                      </div>
+                    )}
+                  </td>
+
+                  {/* Website Cell */}
+                  <td 
+                    onDoubleClick={() => {
+                      setEditRowId(client.id);
+                      setEditField("website_url");
+                      setEditValue(client.website_url || "");
+                    }}
+                    className="px-4 py-3 border-r border-[#2D2D30] relative min-w-[220px]"
+                  >
+                    {editRowId === client.id && editField === "website_url" ? (
+                      <input
+                        type="text"
+                        autoFocus
+                        value={editValue}
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onBlur={() => handleCellUpdate(client.id, "website_url", client.website_url || "")}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleCellUpdate(client.id, "website_url", client.website_url || "");
+                          if (e.key === "Escape") { setEditRowId(null); setEditField(null); }
+                        }}
+                        className="w-full bg-zinc-900 border border-[#F6CF38] rounded px-2 py-1 text-white text-sm focus:outline-none"
+                      />
+                    ) : (
+                      <div className="flex justify-between items-center w-full">
+                        {client.website_url ? (
+                          <a 
+                            href={client.website_url.startsWith("http") ? client.website_url : `https://${client.website_url}`}
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="text-[#F6CF38] hover:underline hover:text-[#e2bd2f] transition-colors"
+                          >
+                            {client.website_url}
+                          </a>
+                        ) : (
+                          <span>—</span>
+                        )}
+                        <button 
+                          onClick={() => {
+                            setEditRowId(client.id);
+                            setEditField("website_url");
+                            setEditValue(client.website_url || "");
+                          }}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-zinc-500 hover:text-[#F6CF38] transition-all duration-150 cursor-pointer"
+                        >
+                          <Edit2 size={12} />
+                        </button>
+                      </div>
+                    )}
+                  </td>
+
                   {/* Actions */}
-                  <td className="px-4 py-3 text-right text-xs">
-                    <span className="text-zinc-500 font-bold uppercase tracking-wider text-[10px] select-none">Double-click cell to edit</span>
+                  <td className="px-4 py-3 text-right">
+                    <div className="flex justify-end items-center gap-3">
+                      <span className="text-zinc-500 font-bold uppercase tracking-wider text-[10px] select-none hidden lg:inline">Double-click cell to edit</span>
+                      {(() => {
+                        const isDeleteAllowed = currentUser?.role === "Admin" || client.created_by === currentUser?.id;
+                        return (
+                           <button
+                             onClick={async () => {
+                               setDeleteTargetId(client.id);
+                               setDeleteTargetName(client.name);
+                               setIsDeleteOpen(true);
+                               setIsCounting(true);
+                               const counts = await fetchLinkedCounts(client.id);
+                               setLinkedProjectsCount(counts.projectsCount);
+                               setLinkedTasksCount(counts.tasksCount);
+                               setIsCounting(false);
+                             }}
+                             disabled={!isDeleteAllowed}
+                             className="p-1.5 bg-zinc-900 border border-[#2D2D30] hover:border-red-500/50 hover:bg-red-500/5 hover:text-red-400 text-zinc-400 rounded-xl transition-all duration-200 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:border-[#2D2D30] disabled:hover:bg-zinc-900 disabled:hover:text-zinc-400"
+                             title={isDeleteAllowed ? "Delete Client" : "Only creators or admins can delete this client"}
+                           >
+                             <Trash2 size={14} />
+                           </button>
+                        );
+                      })()}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -416,7 +660,7 @@ export default function ClientsPage() {
       {/* Add Client Slideout / Modal */}
       {isAddOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-[#161617] border border-[#2D2D30] rounded-2xl w-full max-w-md p-6 relative shadow-2xl space-y-6 animate-in zoom-in-95 duration-200">
+          <div className="bg-[#161617] border border-[#2D2D30] rounded-2xl w-full max-w-lg p-6 relative shadow-2xl space-y-6 animate-in zoom-in-95 duration-200">
             <button onClick={() => setIsAddOpen(false)} className="absolute top-4 right-4 p-2 bg-zinc-900 border border-[#2D2D30] text-zinc-400 hover:text-white rounded-xl transition-colors cursor-pointer">
               <X size={16} />
             </button>
@@ -438,26 +682,75 @@ export default function ClientsPage() {
                   className="block w-full px-4 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors"
                 />
               </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block">Company</label>
+                  <input
+                    type="text"
+                    value={newCompany}
+                    onChange={(e) => setNewCompany(e.target.value)}
+                    placeholder="e.g. Acme Industries"
+                    className="block w-full px-4 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block">Primary Contact</label>
+                  <input
+                    type="text"
+                    value={newPrimaryContactName}
+                    onChange={(e) => setNewPrimaryContactName(e.target.value)}
+                    placeholder="e.g. Jane Smith"
+                    className="block w-full px-4 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block">Email Address</label>
+                  <input
+                    type="email"
+                    value={newEmail}
+                    onChange={(e) => setNewEmail(e.target.value)}
+                    placeholder="e.g. john@acme.com"
+                    className="block w-full px-4 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block">Phone Number</label>
+                  <input
+                    type="tel"
+                    value={newPhone}
+                    onChange={(e) => setNewPhone(e.target.value)}
+                    placeholder="e.g. +1 (555) 019-2834"
+                    className="block w-full px-4 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors"
+                  />
+                </div>
+              </div>
+
               <div className="space-y-1.5">
-                <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block">Company</label>
+                <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block">Website URL</label>
                 <input
-                  type="text"
-                  value={newCompany}
-                  onChange={(e) => setNewCompany(e.target.value)}
-                  placeholder="e.g. Acme Industries"
+                  type="url"
+                  value={newWebsiteUrl}
+                  onChange={(e) => setNewWebsiteUrl(e.target.value)}
+                  placeholder="e.g. https://acme.com"
                   className="block w-full px-4 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors"
                 />
               </div>
+
               <div className="space-y-1.5">
-                <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block">Email Address</label>
-                <input
-                  type="email"
-                  value={newEmail}
-                  onChange={(e) => setNewEmail(e.target.value)}
-                  placeholder="e.g. john@acme.com"
-                  className="block w-full px-4 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors"
+                <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider block">Operational Notes / Background</label>
+                <textarea
+                  value={newNotes}
+                  onChange={(e) => setNewNotes(e.target.value)}
+                  placeholder="Additional background, SLAs, key context..."
+                  rows={3}
+                  className="block w-full px-4 py-3 bg-zinc-900 border border-[#2D2D30] rounded-xl text-white placeholder-zinc-500 text-sm focus:outline-none focus:border-[#F6CF38] transition-colors resize-none text-xs"
                 />
               </div>
+
               <button
                 type="submit"
                 disabled={isSaving}
@@ -469,6 +762,88 @@ export default function ClientsPage() {
           </div>
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      {isDeleteOpen && deleteTargetId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#161617] border border-red-500/30 rounded-2xl w-full max-w-md p-6 relative shadow-2xl space-y-6 animate-in zoom-in-95 duration-200">
+            
+            <button
+              onClick={() => {
+                setIsDeleteOpen(false);
+                setDeleteTargetId(null);
+                setDeleteTargetName(null);
+              }}
+              className="absolute top-4 right-4 p-2 bg-zinc-900 border border-[#2D2D30] text-zinc-400 hover:text-white rounded-xl transition-colors cursor-pointer"
+            >
+              <X size={16} />
+            </button>
+
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-red-500/10 text-red-400 rounded-xl border border-red-500/20">
+                <AlertTriangle size={20} />
+              </div>
+              <h3 className="text-lg font-bold text-white tracking-wide">
+                Confirm Deletion
+              </h3>
+            </div>
+
+            {isCounting ? (
+              <div className="flex flex-col items-center justify-center gap-3 py-6 bg-red-500/5 border border-red-500/15 rounded-xl text-zinc-400">
+                <Loader2 className="animate-spin text-[#F6CF38]" size={20} />
+                <span className="text-[10px] font-bold uppercase tracking-wider">Calculating linked sub-records...</span>
+              </div>
+            ) : (
+              <div className="space-y-3 bg-red-500/5 border border-red-500/15 rounded-xl p-4 text-xs leading-relaxed text-zinc-400">
+                <p className="text-red-400 font-bold uppercase tracking-wider text-[10px]">Critical Security Warning</p>
+                <p>
+                  You are about to permanently delete <strong className="text-white">{deleteTargetName}</strong>. 
+                  This action is irreversible.
+                </p>
+                <p className="text-red-400 font-bold mt-2">
+                  Warning: Deleting this client will permanently delete {linkedProjectsCount} projects and {linkedTasksCount} associated tasks.
+                </p>
+              </div>
+            )}
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDeleteOpen(false);
+                  setDeleteTargetId(null);
+                  setDeleteTargetName(null);
+                }}
+                className="flex-1 px-4 py-3 bg-zinc-900 hover:bg-zinc-800 border border-[#2D2D30] text-white rounded-xl font-bold text-xs tracking-wider uppercase transition-all duration-200 cursor-pointer text-center"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                disabled={isDeleting || isCounting}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold text-xs tracking-wider uppercase transition-all duration-200 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {isDeleting ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <span>Delete Record</span>
+                )}
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* Sliding Detail Panel */}
+      <ClientProjectsPanel
+        clientId={selectedClientId}
+        isOpen={isPanelOpen}
+        onClose={() => {
+          setIsPanelOpen(false);
+          setSelectedClientId(null);
+        }}
+      />
     </div>
   );
 }
