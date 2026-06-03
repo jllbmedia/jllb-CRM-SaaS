@@ -11,29 +11,16 @@ export async function GET(request: Request) {
 
     const supabase = await createClient();
 
-    // 1. Fetch projects with client names
-    let projectsQuery = supabase
+    // 1. Fetch projects with client names and budgeting metrics (global collab for all roles)
+    const { data: projects, error: projectsError } = await supabase
       .from("projects")
-      .select("status, budget, client:clients(name)");
-
-    // Multi-Tenancy Scoping: PMs only fetch their own rows, Admins fetch all
-    if (profile.role !== "Admin") {
-      projectsQuery = projectsQuery.eq("created_by", profile.id);
-    }
-
-    const { data: projects, error: projectsError } = await projectsQuery;
+      .select("id, name, status, budget, estimated_hours, estimated_cost, actual_hours, actual_cost, created_at, client:clients(id, name, company)");
     if (projectsError) throw projectsError;
 
-    // 2. Fetch tasks
-    let tasksQuery = supabase
+    // 2. Fetch tasks with detailed logs and rates (global collab for all roles)
+    const { data: tasks, error: tasksError } = await supabase
       .from("tasks")
-      .select("hours_spent");
-
-    if (profile.role !== "Admin") {
-      tasksQuery = tasksQuery.eq("created_by", profile.id);
-    }
-
-    const { data: tasks, error: tasksError } = await tasksQuery;
+      .select("id, name, hours_spent, cost_per_hour, created_at, project_id");
     if (tasksError) throw tasksError;
 
     // 3. Compute Aggregates
@@ -76,9 +63,9 @@ export async function GET(request: Request) {
     let finishedCount = 0;
 
     (projects || []).forEach((proj) => {
-      if (proj.status === "Planning") {
+      if (proj.status === "Planning" || proj.status === "Pending") {
         pendingCount++;
-      } else if (proj.status === "Active" || proj.status === "On Hold") {
+      } else if (proj.status === "Active" || proj.status === "Ongoing" || proj.status === "On Hold") {
         ongoingCount++;
       } else if (proj.status === "Completed") {
         finishedCount++;
@@ -102,6 +89,8 @@ export async function GET(request: Request) {
         topClients,
         statusDistribution,
       },
+      projects: projects || [],
+      tasks: tasks || []
     });
   } catch (error: any) {
     console.error("Dashboard API error:", error);

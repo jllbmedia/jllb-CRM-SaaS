@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { isAdmin } from "@/utils/supabase/admin";
+import { isAdmin, getCurrentProfile } from "@/utils/supabase/admin";
 import AdminControlCenter from "@/components/AdminControlCenter";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +11,8 @@ export default async function AdminUsersPage() {
   if (!authorized) {
     redirect("/");
   }
+
+  const profile = await getCurrentProfile();
 
   // 2. Fetch all CRM team members for the directory mapping
   const supabase = await createClient();
@@ -35,7 +37,7 @@ export default async function AdminUsersPage() {
       </div>
 
       {/* Render the dual-tab directory and activity feeds log panels */}
-      <AdminControlCenter initialMembers={members || []} />
+      <AdminControlCenter initialMembers={members || []} currentUserId={profile?.id} />
     </div>
   );
 }

@@ -23,7 +23,7 @@ interface Member {
   created_at: string;
 }
 
-export default function TeammateList({ initialMembers }: { initialMembers: Member[] }) {
+export default function TeammateList({ initialMembers, currentUserId }: { initialMembers: Member[], currentUserId?: string }) {
   const [members, setMembers] = useState<Member[]>(initialMembers);
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -210,8 +210,9 @@ export default function TeammateList({ initialMembers }: { initialMembers: Membe
                           setTargetMember(member);
                           setIsDeleteOpen(true);
                         }}
-                        className="p-2 bg-zinc-900 border border-[#2D2D30] hover:border-red-500/50 hover:bg-red-500/5 hover:text-red-400 text-zinc-400 rounded-xl transition-all duration-200 cursor-pointer"
-                        title="Delete Teammate"
+                        disabled={member.id === currentUserId}
+                        className="p-2 bg-zinc-900 border border-[#2D2D30] hover:border-red-500/50 hover:bg-red-500/5 hover:text-red-400 text-zinc-400 rounded-xl transition-all duration-200 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:border-[#2D2D30] disabled:hover:bg-zinc-900 disabled:hover:text-zinc-400"
+                        title={member.id === currentUserId ? "You cannot delete yourself" : "Delete Teammate"}
                       >
                         <Trash2 size={16} />
                       </button>
@@ -252,7 +253,9 @@ export default function TeammateList({ initialMembers }: { initialMembers: Membe
                       setTargetMember(member);
                       setIsDeleteOpen(true);
                     }}
-                    className="p-2.5 bg-zinc-900 border border-[#2D2D30] text-zinc-400 hover:text-red-400 hover:border-red-500/30 rounded-xl transition-colors cursor-pointer"
+                    disabled={member.id === currentUserId}
+                    className="p-2.5 bg-zinc-900 border border-[#2D2D30] text-zinc-400 hover:text-red-400 hover:border-red-500/30 rounded-xl transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-zinc-400 disabled:hover:border-[#2D2D30]"
+                    title={member.id === currentUserId ? "You cannot delete yourself" : "Delete Teammate"}
                   >
                     <Trash2 size={16} />
                   </button>

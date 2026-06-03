@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   email TEXT NOT NULL UNIQUE,
   full_name TEXT,
   role user_role NOT NULL DEFAULT 'PM',
+  phone TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
@@ -225,5 +226,58 @@ DROP TRIGGER IF EXISTS trigger_log_tasks ON public.tasks;
 CREATE TRIGGER trigger_log_tasks
   AFTER INSERT OR UPDATE OR DELETE ON public.tasks
   FOR EACH ROW EXECUTE FUNCTION public.log_data_mutation();
+
+
+-- ==========================================================
+-- BUDGETING SCHEMAS & CALCULATIONS EXTENSION
+-- ==========================================================
+
+-- 16. Ensure budgeting columns exist on projects
+ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS estimated_hours NUMERIC NOT NULL DEFAULT 0;
+ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS estimated_cost NUMERIC NOT NULL DEFAULT 0;
+ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS actual_hours NUMERIC NOT NULL DEFAULT 0;
+ALTER TABLE public.projects ADD COLUMN IF NOT EXISTS actual_cost NUMERIC NOT NULL DEFAULT 0;
+
+-- 17. Ensure cost per hour column exists on tasks
+ALTER TABLE public.tasks ADD COLUMN IF NOT EXISTS cost_per_hour NUMERIC NOT NULL DEFAULT 0;
+
+-- 18. Project actuals automatic aggregation trigger function
+CREATE OR REPLACE FUNCTION public.calculate_project_actuals()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_project_id UUID;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    v_project_id := OLD.project_id;
+  ELSE
+    v_project_id := NEW.project_id;
+  END IF;
+
+  IF v_project_id IS NOT NULL THEN
+    UPDATE public.projects
+    SET 
+      actual_hours = COALESCE((
+        SELECT SUM(hours_spent) 
+        FROM public.tasks 
+        WHERE project_id = v_project_id
+      ), 0),
+      actual_cost = COALESCE((
+        SELECT SUM(hours_spent * cost_per_hour) 
+        FROM public.tasks 
+        WHERE project_id = v_project_id
+      ), 0)
+    WHERE id = v_project_id;
+  END IF;
+
+  RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 19. Bind project actuals trigger to tasks mutation events
+DROP TRIGGER IF EXISTS trigger_calculate_project_actuals ON public.tasks;
+CREATE TRIGGER trigger_calculate_project_actuals
+  AFTER INSERT OR UPDATE OR DELETE ON public.tasks
+  FOR EACH ROW EXECUTE FUNCTION public.calculate_project_actuals();
+
 
 
